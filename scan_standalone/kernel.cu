@@ -32,100 +32,6 @@ void gpu_sum_scan_naive(unsigned int* const d_out,
 	d_out[d_hist_idx] = cdf_val;
 }
 
-//__global__
-//void gpu_sum_scan_blelloch(unsigned int* const d_out,
-//	const unsigned int* const d_in,
-//	const size_t numElems)
-//{
-//	unsigned int glbl_t_idx = blockDim.x * blockIdx.x + threadIdx.x;
-//
-//	// Copy d_in to d_out
-//	// This has to be modified when we decide to only use numElems/2 threads instead of numElems
-//	if (glbl_t_idx < numElems)
-//		d_out[glbl_t_idx] = d_in[glbl_t_idx];
-//	else
-//		return;
-//
-//	if (glbl_t_idx >= (numElems / 2))
-//		return;
-//
-//	__syncthreads();
-//
-//	// Reduce step
-//	unsigned int max_steps = 0;
-//	while ((1 << max_steps) < numElems)
-//		max_steps = max_steps + 1;
-//
-//	unsigned int r_idx = 0;
-//	unsigned int l_idx = 0;
-//	unsigned int sum = 0; // global sum can be passed to host if needed
-//	unsigned int t_active = 0;
-//	for (int s = 0; s < max_steps; ++s)
-//	{
-//		t_active = 0;
-//
-//		// calculate necessary indexes
-//		// right index must be (t+1) * 2^(s+1)) - 1
-//		r_idx = ((glbl_t_idx + 1) * (1 << (s + 1))) - 1;
-//		if (r_idx >= 0 && r_idx < numElems)
-//			t_active = 1;
-//
-//		if (t_active)
-//		{
-//			// left index must be r_idx - 2^s
-//			l_idx = r_idx - (1 << s);
-//
-//			// do the actual add operation
-//			sum = d_out[l_idx] + d_out[r_idx];
-//		}
-//		__syncthreads();
-//
-//		if (t_active)
-//			d_out[r_idx] = sum;
-//		__syncthreads();
-//	}
-//
-//	// Reset last element to operation's identity (sum, 0)
-//	if (glbl_t_idx == 0)
-//		d_out[r_idx] = 0;
-//
-//	__syncthreads();
-//
-//	// Downsweep step
-//	// FIX INDICES
-//	for (int s = max_steps - 1; s >= 0; --s)
-//	{
-//		// calculate necessary indexes
-//		// right index must be (t+1) * 2^(s+1)) - 1
-//		r_idx = ((glbl_t_idx + 1) * (1 << (s + 1))) - 1;
-//		if (r_idx >= 0 && r_idx < numElems)
-//		{
-//			t_active = 1;
-//		}
-//
-//		unsigned int r_cpy = 0;
-//		unsigned int lr_sum = 0;
-//		if (t_active)
-//		{
-//			// left index must be r_idx - 2^s
-//			l_idx = r_idx - (1 << s);
-//
-//			// do the downsweep operation
-//			r_cpy = d_out[r_idx];
-//			lr_sum = d_out[l_idx] + d_out[r_idx];
-//		}
-//		__syncthreads();
-//
-//		if (t_active)
-//		{
-//			d_out[l_idx] = r_cpy;
-//			d_out[r_idx] = lr_sum;
-//		}
-//		__syncthreads();
-//
-//	}
-//}
-
 __global__
 void gpu_sum_scan_blelloch(unsigned int* const d_out,
 	const unsigned int* const d_in,
@@ -274,7 +180,6 @@ void sum_scan_naive(unsigned int* const d_out,
 	unsigned int gridSz = (unsigned int)ceil(float(numElems) / float(MAX_BLOCK_SZ));
 	checkCudaErrors(cudaMemset(d_out, 0, numElems * sizeof(unsigned int)));
 	gpu_sum_scan_naive << <gridSz, blockSz >> >(d_out, d_in, numElems);
-	//gpu_sum_scan_blelloch << <gridSz, blockSz >> >(d_out, d_in, numElems);
 }
 
 void sum_scan_blelloch(unsigned int* const d_out,
@@ -285,31 +190,30 @@ void sum_scan_blelloch(unsigned int* const d_out,
 	checkCudaErrors(cudaMemset(d_out, 0, numElems * sizeof(unsigned int)));
 
 	// Set up number of threads and blocks
-	// num of blocks must be ceiling of log of numElems
-	// if numElems is not power of two, the remainder will still need a whole block
+	// If input size is not power of two, the remainder will still need a whole block
+	// Thus, number of blocks must be the least number of 2048-blocks greater than the input size
 	unsigned int blockSz = MAX_BLOCK_SZ;
-	unsigned int gridSz = (unsigned int)ceil(float(numElems) / float(2 * blockSz));
+	unsigned int max_elems_per_block = blockSz * 2; // due to binary tree nature of algorithm
+	unsigned int gridSz = (unsigned int)ceil(float(numElems) / float(max_elems_per_block));
 
 	// Allocate memory for array of total sums produced by each block
-	// Memory size is the same as number of blocks
+	// Array length must be the same as number of blocks / grid size
 	unsigned int* d_block_sums;
 	checkCudaErrors(cudaMalloc(&d_block_sums, sizeof(unsigned int) * gridSz));
 	checkCudaErrors(cudaMemset(d_block_sums, 0, sizeof(unsigned int) * gridSz));
 
 	// Sum scan data allocated for each block
-	// A block, at the time of this writing, can handle up to 2048 items, since
-	//  a block can have only up to 1024 threads
-	// Shared memory size is then 2048
-	gpu_sum_scan_blelloch<<<gridSz, blockSz, sizeof(unsigned int) * 2 * blockSz>>>(d_out, d_in, d_block_sums, numElems);
-	//gpu_sum_scan_blelloch << <gridSz, blockSz >> >(d_out, d_in, numElems);
+	gpu_sum_scan_blelloch<<<gridSz, blockSz, sizeof(unsigned int) * max_elems_per_block >>>(d_out, d_in, d_block_sums, numElems);
 
 	// Sum scan each block's total sums
+	// Use basic implementation if number of total sums is <= 2048
+	// Else use the more advanced implementation
 	if (gridSz <= 2048)
 	{
 		unsigned int* d_dummy_blocks_sums;
 		checkCudaErrors(cudaMalloc(&d_dummy_blocks_sums, sizeof(unsigned int)));
 		checkCudaErrors(cudaMemset(d_dummy_blocks_sums, 0, sizeof(unsigned int)));
-		gpu_sum_scan_blelloch<<<1, blockSz, sizeof(unsigned int) * 2 * blockSz >>>(d_block_sums, d_block_sums, d_dummy_blocks_sums, gridSz);
+		gpu_sum_scan_blelloch<<<1, blockSz, sizeof(unsigned int) * max_elems_per_block>>>(d_block_sums, d_block_sums, d_dummy_blocks_sums, gridSz);
 		checkCudaErrors(cudaFree(d_dummy_blocks_sums));
 	}
 	else
@@ -321,6 +225,7 @@ void sum_scan_blelloch(unsigned int* const d_out,
 		checkCudaErrors(cudaFree(d_in_block_sums));
 	}
 	
+	// Uncomment to examine block sums
 	//unsigned int* h_block_sums = new unsigned int[gridSz];
 	//checkCudaErrors(cudaMemcpy(h_block_sums, d_block_sums, sizeof(unsigned int) * gridSz, cudaMemcpyDeviceToHost));
 	//std::cout << "Block sums: ";
@@ -332,7 +237,7 @@ void sum_scan_blelloch(unsigned int* const d_out,
 	//std::cout << "Block sums length: " << gridSz << std::endl;
 	//delete[] h_block_sums;
 
-	// Add block-wise total sums to output of each block
+	// Add each block's total sum to scanned output of each block
 	gpu_add_block_sums<<<gridSz, blockSz>>>(d_out, d_out, d_block_sums, numElems);
 
 	checkCudaErrors(cudaFree(d_block_sums));
@@ -352,70 +257,57 @@ void cpu_sum_scan(unsigned int* const h_out,
 
 int main()
 {
+	// Set up clock for timing comparisons
 	srand(time(NULL));
+	std::clock_t start;
+	double duration;
+
 	unsigned int h_in_len = 0;
-	//unsigned int h_in_len = (1 << 26);
-	//unsigned int h_in_len = 1920*1080;
 	for (int k = 0; k < 27; ++k)
 	{
-		//GpuTimer timer;
-		std::clock_t start;
-		double duration;
-
 		h_in_len = (1 << k);
-		//h_in_len = 220480;
 		std::cout << "h_in size: " << h_in_len << std::endl;
 
+		// Generate input
 		unsigned int* h_in = new unsigned int[h_in_len];
 		for (int i = 0; i < h_in_len; ++i)
 		{
 			//h_in[i] = rand() % 2;
 			h_in[i] = i;
 		}
+
+		// Set up host-side memory for output
 		unsigned int* h_out_naive = new unsigned int[h_in_len];
 		unsigned int* h_out_blelloch = new unsigned int[h_in_len];
+		
+		// Set up device-side memory for input
 		unsigned int* d_in;
 		checkCudaErrors(cudaMalloc(&d_in, sizeof(unsigned int) * h_in_len));
 		checkCudaErrors(cudaMemcpy(d_in, h_in, sizeof(unsigned int) * h_in_len, cudaMemcpyHostToDevice));
-		unsigned int* d_out_naive;
+
+		// Set up device-side memory for output
 		unsigned int* d_out_blelloch;
-		checkCudaErrors(cudaMalloc(&d_out_naive, sizeof(unsigned int) * h_in_len));
 		checkCudaErrors(cudaMalloc(&d_out_blelloch, sizeof(unsigned int) * h_in_len));
-		//timer.Start();
-		//sum_scan_naive(d_out_naive, d_in, h_in_len);
+
+		// Do CPU scan for reference
 		start = std::clock();
 		cpu_sum_scan(h_out_naive, h_in, h_in_len);
 		duration = (std::clock() - start) / (double)CLOCKS_PER_SEC;
 		std::cout << "CPU time: " << duration << std::endl;
-		//std::cout << "Naive time: " << timer.Elapsed() << std::endl;
-		//timer.Start();
+
+		// Do GPU scan
 		start = std::clock();
 		sum_scan_blelloch(d_out_blelloch, d_in, h_in_len);
 		duration = (std::clock() - start) / (double)CLOCKS_PER_SEC;
 		std::cout << "GPU time: " << duration << std::endl;
-		//timer.Stop();
-		//std::cout << "Blelloch time: " << timer.Elapsed() << std::endl
-		//checkCudaErrors(cudaMemcpy(h_out_naive, d_out_naive, sizeof(unsigned int) * h_in_len, cudaMemcpyDeviceToHost));
+		
+		// Copy device output array to host output array
+		// And free device-side memory
 		checkCudaErrors(cudaMemcpy(h_out_blelloch, d_out_blelloch, sizeof(unsigned int) * h_in_len, cudaMemcpyDeviceToHost));
 		checkCudaErrors(cudaFree(d_out_blelloch));
-		checkCudaErrors(cudaFree(d_out_naive));
 		checkCudaErrors(cudaFree(d_in));
 
-		//for (int i = 0; i < h_in_len; ++i)
-		//{
-		//	std::cout << h_in[i] << ", ";
-		//}
-		//std::cout << std::endl;
-		//for (int i = 0; i < h_in_len; ++i)
-		//{
-		//	std::cout << h_out_naive[i] << ", ";
-		//}
-		//std::cout << std::endl;
-		//for (int i = 0; i < h_in_len; ++i)
-		//{
-		//	std::cout << h_out_blelloch[i] << ", ";
-		//}
-		//std::cout << std::endl;
+		// Check for any mismatches between outputs of CPU and GPU
 		bool match = true;
 		int index_diff = 0;
 		for (int i = 0; i < h_in_len; ++i)
@@ -428,6 +320,8 @@ int main()
 			}
 		}
 		std::cout << "Match: " << match << std::endl;
+
+		// Detail the mismatch if any
 		if (!match)
 		{
 			std::cout << "Difference in index: " << index_diff << std::endl;
@@ -450,6 +344,7 @@ int main()
 			std::cout << std::endl;
 		}
 
+		// Free host-side memory
 		delete[] h_in;
 		delete[] h_out_naive;
 		delete[] h_out_blelloch;
