@@ -27,9 +27,10 @@ int main()
 	double duration;
 
 	unsigned int h_in_len = 0;
-	for (int k = 0; k < 27; ++k)
+	for (int k = 0; k < 29; ++k)
 	{
-		h_in_len = (1 << k);
+		h_in_len = (1 << k) + 3;
+		//h_in_len = 3;
 		std::cout << "h_in size: " << h_in_len << std::endl;
 
 		// Generate input
@@ -89,12 +90,12 @@ int main()
 		if (!match)
 		{
 			std::cout << "Difference in index: " << index_diff << std::endl;
-			std::cout << "Naive: " << h_out_naive[index_diff] << std::endl;
+			std::cout << "CPU: " << h_out_naive[index_diff] << std::endl;
 			std::cout << "Blelloch: " << h_out_blelloch[index_diff] << std::endl;
 			int window_sz = 10;
 
 			std::cout << "Contents: " << std::endl;
-			std::cout << "Naive: ";
+			std::cout << "CPU: ";
 			for (int i = -(window_sz / 2); i < (window_sz / 2); ++i)
 			{
 				std::cout << h_out_naive[index_diff + i] << ", ";

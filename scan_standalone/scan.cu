@@ -160,7 +160,8 @@ void gpu_add_block_sums(unsigned int* const d_out,
 	__syncthreads();
 
 	d_out[2 * glbl_t_idx] = d_in_val_0 + d_block_sum_val;
-	d_out[2 * glbl_t_idx + 1] = d_in_val_1 + d_block_sum_val;
+	if (2 * glbl_t_idx + 1 < numElems)
+		d_out[2 * glbl_t_idx + 1] = d_in_val_1 + d_block_sum_val;
 }
 
 void sum_scan_naive(unsigned int* const d_out,
@@ -185,7 +186,7 @@ void sum_scan_blelloch(unsigned int* const d_out,
 	// Thus, number of blocks must be the least number of 2048-blocks greater than the input size
 	unsigned int blockSz = MAX_BLOCK_SZ;
 	unsigned int max_elems_per_block = blockSz * 2; // due to binary tree nature of algorithm
-	unsigned int gridSz = (unsigned int)ceil(float(numElems) / float(max_elems_per_block));
+	unsigned int gridSz = (unsigned int) std::ceil((double) numElems / (double) max_elems_per_block);
 
 	// Allocate memory for array of total sums produced by each block
 	// Array length must be the same as number of blocks / grid size

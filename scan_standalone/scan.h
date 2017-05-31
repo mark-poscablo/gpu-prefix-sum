@@ -4,6 +4,8 @@
 #include "cuda_runtime.h"
 #include "device_launch_parameters.h"
 
+#include <cmath>
+
 #include "utils.h"
 #include "timer.h"
 
