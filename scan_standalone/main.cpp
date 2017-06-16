@@ -27,10 +27,9 @@ int main()
 	double duration;
 
 	unsigned int h_in_len = 0;
-	for (int k = 0; k < 29; ++k)
+	for (int k = 1; k < 29; ++k)
 	{
 		h_in_len = (1 << k) + 3;
-		//h_in_len = 3;
 		std::cout << "h_in size: " << h_in_len << std::endl;
 
 		// Generate input
